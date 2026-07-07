@@ -5,10 +5,10 @@ require('dotenv').config();
 const { query, testConnection } = require('./db');
 
 // ==============================================================================
-// PRISMA DELIVERY APP - SERVIDOR API REST
+// NEXOS DELIVERY API - SERVIDOR API REST
 // ==============================================================================
 // Este servidor actúa como puente seguro entre la app móvil React Native
-// y la base de datos PostgreSQL. La app nunca conoce las credenciales de la DB.
+// y la base de datos MySQL. La app nunca conoce las credenciales de la DB.
 // ==============================================================================
 
 const app = express();
@@ -16,18 +16,14 @@ const PORT = process.env.PORT || 3000;
 
 // ========================== MIDDLEWARES GLOBALES ==============================
 
-// Permitir JSON en el body de las peticiones (para PATCH, POST, etc.)
 app.use(express.json());
 
-// CORS abierto: permite que la app móvil y cualquier cliente acceda a la API.
-// En producción, puedes restringirlo si lo necesitas.
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Logging simple de cada petición entrante
 app.use((req, _res, next) => {
   console.log(`📡 ${new Date().toISOString()} | ${req.method} ${req.url}`);
   next();
@@ -35,20 +31,19 @@ app.use((req, _res, next) => {
 
 // ========================== RUTAS DE LA API ===================================
 
-// ---- Healthcheck (útil para que Render verifique que el servicio está vivo) ---
+// ---- Healthcheck ----
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
-    servicio: 'Prisma Delivery API',
+    servicio: 'Nexos Delivery API',
     timestamp: new Date().toISOString(),
   });
 });
 
 // ---- GET /api/productos ----
-// Devuelve todos los productos activos con información de su tienda.
 app.get('/api/productos', async (_req, res, next) => {
   try {
-    const result = await query(`
+    const rows = await query(`
       SELECT
         p.id,
         p.titulo,
@@ -69,8 +64,8 @@ app.get('/api/productos', async (_req, res, next) => {
 
     res.json({
       ok: true,
-      total: result.rows.length,
-      data: result.rows,
+      total: rows.length,
+      data: rows,
     });
   } catch (error) {
     next(error);
@@ -78,10 +73,9 @@ app.get('/api/productos', async (_req, res, next) => {
 });
 
 // ---- GET /api/tiendas ----
-// Devuelve todas las tiendas registradas con el nombre de su propietario.
 app.get('/api/tiendas', async (_req, res, next) => {
   try {
-    const result = await query(`
+    const rows = await query(`
       SELECT
         t.id,
         t.nombre,
@@ -104,8 +98,8 @@ app.get('/api/tiendas', async (_req, res, next) => {
 
     res.json({
       ok: true,
-      total: result.rows.length,
-      data: result.rows,
+      total: rows.length,
+      data: rows,
     });
   } catch (error) {
     next(error);
@@ -113,14 +107,11 @@ app.get('/api/tiendas', async (_req, res, next) => {
 });
 
 // ---- PATCH /api/usuarios/:id ----
-// Actualiza el rol de un usuario. Usa consulta parametrizada ($1, $2) para
-// prevenir inyección SQL.
 app.patch('/api/usuarios/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const { rol } = req.body;
 
-    // Validar que el rol enviado sea uno de los permitidos por el ENUM
     const rolesPermitidos = ['admin', 'tienda', 'delivery', 'user'];
     if (!rol || !rolesPermitidos.includes(rol)) {
       return res.status(400).json({
@@ -129,7 +120,8 @@ app.patch('/api/usuarios/:id', async (req, res, next) => {
       });
     }
 
-    // Validar formato UUID básico
+    // Nota: Como tus IDs en la base de datos de TiDB se manejan como VARCHAR(36) (UUIDs),
+    // mantenemos la validación de formato correspondiente.
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(id)) {
       return res.status(400).json({
@@ -138,23 +130,29 @@ app.patch('/api/usuarios/:id', async (req, res, next) => {
       });
     }
 
-    // Consulta parametrizada — el $1 y $2 son reemplazados de forma segura por pg
-    const result = await query(
-      'UPDATE usuarios SET rol = $1 WHERE id = $2 RETURNING id, nombre, email, rol',
+    // En MySQL usamos '?' como placeholder. Cambiamos UPDATE porque no soporta RETURNING.
+    const updateResult = await query(
+      'UPDATE usuarios SET rol = ? WHERE id = ?',
       [rol, id]
     );
 
-    if (result.rows.length === 0) {
+    if (updateResult.affectedRows === 0) {
       return res.status(404).json({
         ok: false,
         error: 'No se encontró un usuario con ese ID.',
       });
     }
 
+    // Buscamos el registro actualizado para responder con los datos requeridos
+    const updatedUser = await query(
+      'SELECT id, nombre, email, rol FROM usuarios WHERE id = ?',
+      [id]
+    );
+
     res.json({
       ok: true,
       mensaje: 'Rol actualizado correctamente.',
-      data: result.rows[0],
+      data: updatedUser[0],
     });
   } catch (error) {
     next(error);
@@ -163,7 +161,6 @@ app.patch('/api/usuarios/:id', async (req, res, next) => {
 
 // ========================== MANEJO DE ERRORES GLOBAL =========================
 
-// Ruta no encontrada (404)
 app.use((_req, res) => {
   res.status(404).json({
     ok: false,
@@ -171,9 +168,6 @@ app.use((_req, res) => {
   });
 });
 
-// Middleware de errores global — captura cualquier error que se lance en las rutas
-// para que el servidor NUNCA se bloquee.
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error('🔴 Error en el servidor:', err.message);
   console.error(err.stack);
@@ -181,7 +175,6 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({
     ok: false,
     error: 'Error interno del servidor. Intenta más tarde.',
-    // En desarrollo puedes ver el detalle; en producción se oculta:
     detalle: process.env.NODE_ENV !== 'production' ? err.message : undefined,
   });
 });
@@ -190,10 +183,9 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, async () => {
   console.log('===========================================================');
-  console.log(`🚀 Prisma Delivery API corriendo en puerto ${PORT}`);
+  console.log(`🚀 Nexos Delivery API corriendo en puerto ${PORT}`);
   console.log(`   Entorno: ${process.env.NODE_ENV || 'development'}`);
   console.log('===========================================================');
 
-  // Verificar conexión a la DB al arrancar
   await testConnection();
 });
